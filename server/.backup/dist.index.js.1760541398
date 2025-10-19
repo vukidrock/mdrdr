@@ -1,0 +1,33 @@
+// server/src/index.ts
+import "dotenv/config";
+import express from "express";
+import cors from "cors";
+import path from "path";
+// Routers (chú ý: các router này nên định nghĩa route gốc là "/" thay vì lặp prefix bên trong)
+import healthRouter from "./routes/health.js"; // EXPECT: router.get("/")  -> /api/health
+import articlesListRouter from "./routes/api/articles.js"; // EXPECT: router.get("/")  -> /api/articles
+import legacyArticleRouter from "./routes/article.js"; // legacy: GET/POST /api/article
+const app = express();
+app.get('/health', (_req, res) => {
+    res.json({
+        ok: true,
+        uptime: process.uptime(),
+        pid: process.pid,
+        timestamp: new Date().toISOString(),
+    });
+});
+// Middlewares
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: "1mb" }));
+// ---- API routes ----
+app.use("/api/health", healthRouter); // GET /api/health
+app.use("/api/articles", articlesListRouter); // GET /api/articles?page=&limit=&q=&sort=
+app.use("/api/article", legacyArticleRouter); // GET /api/article (legacy list), POST /api/article (ingest by URL)
+// ---- Static (tuỳ chọn): phục vụ web/dist nếu bạn build frontend chính vào ../web/dist ----
+app.use(express.static(path.resolve("../web/dist")));
+// ---- Start server ----
+const port = Number(process.env.PORT || 3001);
+app.listen(port, () => {
+    console.log(`server listening on :${port}`);
+});
+app.use(healthRouter);

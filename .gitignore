@@ -1,0 +1,26 @@
+# global
+.DS_Store
+*.log
+*.swp
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# node
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# build artifacts
+dist/
+build/
+
+# editor
+.vscode/
+.idea/
+
+# misc
+backups/

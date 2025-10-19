@@ -108,12 +108,13 @@ router.post("/ingest", async (req, res) => {
       return res.json({ status: "cached", article: exist[0] });
     }
 
-    // 5) Tóm tắt + keywords (keywords để dạng TEXT[] khi ghi DB)
+    // 5) Tóm tắt + keywords -> JSONB
     const summaryHtml = await summarizeContent({ title, excerpt, html: contentHtml, url: mediumUrl });
     const plain = (contentHtml || "").replace(/<[^>]+>/g, " ");
     let kws = await extractKeywords(plain);
     if (!Array.isArray(kws)) kws = [];
     const safeKeywords: string[] = kws.map(String).filter(Boolean).slice(0, 50);
+    const keywordsJson = JSON.stringify(safeKeywords); // <-- lưu dạng JSON string
 
     // 6) Embedding -> vector
     const embedding = await createEmbedding(plain);
@@ -129,7 +130,7 @@ router.post("/ingest", async (req, res) => {
       contentHtml,             // $6
       contentHash,             // $7
       summaryHtml,             // $8
-      safeKeywords,            // $9 (TEXT[])
+      keywordsJson,            // $9 (JSON string) -> ::jsonb
       embeddingStr,            // $10 (string '[..]' | null) -> ::vector
       sourceUsed || "medium",  // $11
     ];
@@ -140,7 +141,7 @@ router.post("/ingest", async (req, res) => {
         `UPDATE articles
            SET title=$2, author=$3, published_at=$4, excerpt=$5, content_html=$6,
                content_hash=$7, summary_html=$8,
-               keywords = COALESCE($9::text[], '{}'::text[]),
+               keywords = COALESCE($9::jsonb, '[]'::jsonb),
                embedding = COALESCE(NULLIF($10::text, '')::vector, embedding),
                source_used=$11,
                updated_at=NOW()
@@ -155,7 +156,7 @@ router.post("/ingest", async (req, res) => {
             content_hash, summary_html, keywords, embedding, source_used)
          VALUES
            ($1,  $2,    $3,     $4,           $5,     $6,
-            $7,   $8,   COALESCE($9::text[], '{}'::text[]),
+            $7,   $8,   COALESCE($9::jsonb, '[]'::jsonb),
             COALESCE(NULLIF($10::text, '')::vector, NULL),
             $11)
          RETURNING *`,

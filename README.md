@@ -3,7 +3,6 @@
 Fullstack project: **Node.js v20 + Express (TypeScript)** + **React + Vite** + **PostgreSQL + pgvector** + **OpenAI**.
 
 ## Features
-- Fetch Medium content via Freedium → Jina.
 - AI Summary (HTML): tóm tắt + phân tích + insight + reflection + checklist.
 - Store articles to DB, cache by content hash.
 - Related articles via pgvector (semantic) + keyword fallback.

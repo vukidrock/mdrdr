@@ -120,3 +120,4 @@ Open: `http://localhost:5173/read?url=<medium-url>`
 - Replace Ad placeholders with real AdSense script when ready.
 - Domain can change later; update `BASE_URL` in server `.env`.
 - Use `EMBED_DIM` based on embedding model (default 1536 for OpenAI text-embedding-3-small).
+# mdrdr

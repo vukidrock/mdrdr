@@ -1,4 +1,4 @@
-# 🧠 MDRDR — Medium Reader AI (Fullstack)
+# 🧠 MDRDR — News Reader AI (Fullstack)
 
 Fullstack project: **Node.js v20 + Express (TypeScript)** + **React + Vite** + **PostgreSQL + pgvector** + **OpenAI**.
 

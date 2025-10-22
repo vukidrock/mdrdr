@@ -10,7 +10,7 @@ type HistoryItem = {
 };
 
 const API_BASE =
-  import.meta.env.VITE_API_BASE?.toString() || "http://103.173.226.89:3001";
+  import.meta.env.VITE_API_BASE?.toString() || "";
 
 function fmt(d?: string | null) {
   if (!d) return "—";

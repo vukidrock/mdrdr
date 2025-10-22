@@ -1,20 +1,50 @@
 import { Router } from "express";
 import { getOrCreateArticle, listArticles } from "../services/fetchArticle.js";
 import { q } from "../utils/db.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
 /**
  * POST /api/article  (legacy) — tạo/fetch bài từ URL
  * Body: { url }
+ * - BẮT BUỘC đăng nhập
+ * - Auto-like cho tác giả sau khi bài được tạo/có sẵn
  */
-router.post("/", async (req, res) => {
+router.post("/", requireAuth as any, async (req: any, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "url required" });
 
   try {
-    const article = await getOrCreateArticle(url);
-    res.json(article);
+    // Có nơi trả trực tiếp article, có nơi trả { status, article }
+    const result = await getOrCreateArticle(url);
+    const art = (result as any)?.article ?? result; // chuẩn hoá thành object bài viết
+
+    // nếu có id bài & có user -> auto-like (không làm hỏng flow nếu đã like trước đó)
+    if (art?.id && req.user?.id) {
+      try {
+        await q(
+          `INSERT INTO article_likes (article_id, user_id)
+           VALUES ($1, $2)
+           ON CONFLICT (article_id, user_id) DO NOTHING`,
+          [art.id, req.user.id]
+        );
+
+        // cập nhật tổng like vào bảng articles
+        const row = (await q<{ c: number }>(
+          `SELECT COUNT(*)::int AS c FROM article_likes WHERE article_id=$1`,
+          [art.id]
+        ))[0];
+        const count = row?.c ?? 0;
+        await q(`UPDATE articles SET likes=$1 WHERE id=$2`, [count, art.id]);
+      } catch (e) {
+        console.error("auto-like author failed:", e);
+        // không throw để không làm fail tạo bài
+      }
+    }
+
+    // trả về đúng format của hàm gốc (nếu có wrapper thì giữ nguyên)
+    res.json(result);
   } catch (err) {
     console.error("POST /api/article error:", err);
     res.status(500).json({ error: "server error" });
@@ -51,7 +81,7 @@ router.get("/:id", async (req, res) => {
 });
 
 /**
- * DELETE /api/article/:id — xoá bài (trả JSON để client không lỗi parse body rỗng)
+ * DELETE /api/article/:id — xoá bài
  */
 router.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
@@ -83,11 +113,10 @@ router.patch("/:id", async (req, res) => {
     "summary_html",
     "published_at",
     "keywords",
-    "medium_url", // client có thể gửi field này
-    "url",        // hoặc gửi thẳng url
+    "medium_url",
+    "url",
   ]);
 
-  // Lọc payload
   const payload: Record<string, any> = {};
   for (const [k, v] of Object.entries(req.body ?? {})) {
     if (allowed.has(k)) payload[k] = v;
@@ -97,7 +126,6 @@ router.patch("/:id", async (req, res) => {
   }
 
   try {
-    // Phát hiện kiểu cột 'keywords'
     let kwCast = "";
     let kwValueForBind: any = undefined;
 
@@ -110,12 +138,10 @@ router.patch("/:id", async (req, res) => {
       );
       const udt = meta[0]?.udt_name || "";
 
-      // Chuẩn hóa input về array hoặc null
       let arr: string[] | null = null;
       if (Array.isArray(payload.keywords)) {
         arr = payload.keywords.map((s: any) => String(s)).filter(Boolean);
       } else if (typeof payload.keywords === "string") {
-        // chấp nhận "a,b,c" hoặc JSON string '["a","b"]'
         const s = payload.keywords.trim();
         if (!s) arr = [];
         else if (s.startsWith("[") && s.endsWith("]")) {
@@ -132,12 +158,11 @@ router.patch("/:id", async (req, res) => {
 
       if (udt === "jsonb") {
         kwCast = "::jsonb";
-        kwValueForBind = (arr == null) ? null : JSON.stringify(arr); // stringify cho jsonb
+        kwValueForBind = (arr == null) ? null : JSON.stringify(arr);
       } else if (udt === "_text") {
         kwCast = "::text[]";
-        kwValueForBind = arr; // mảng JS cho text[]
+        kwValueForBind = arr;
       } else {
-        // fallback: coi như jsonb
         kwCast = "::jsonb";
         kwValueForBind = (arr == null) ? null : JSON.stringify(arr);
       }
@@ -157,7 +182,6 @@ router.patch("/:id", async (req, res) => {
         values.push(v ?? null);
         i++;
       } else if (k === "medium_url" || k === "url") {
-        // map medium_url → cột url
         sets.push(`url = $${i}`);
         values.push(v);
         i++;

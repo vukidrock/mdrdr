@@ -1,5 +1,6 @@
 // server/src/routes/api/articles.ts
 import express from "express";
+import { requireAuth, requireAuthOptional } from "../../middleware/auth.js";
 import { q } from "../../utils/db.js";
 import { fetchExtracted } from "../../services/fetchArticle.js";
 import { summarizeContent } from "../../services/summarize.js";
@@ -8,17 +9,12 @@ import { normaliseMediumUrl, buildFreediumUrl } from "../../utils/url.js";
 
 const router = express.Router();
 
-/** Helper: lấy client id từ header (để trả về cờ liked) */
-function getClientId(req: express.Request): string {
-  return String(req.get("x-client-id") || "").trim().slice(0, 200);
-}
-
 /**
  * ✅ List articles với paging / search / sort
  * GET /api/articles?page=1&limit=20&q=&sort=-created_at
- * Trả về { items, total, page, limit }. Mỗi item có thêm "liked" nếu kèm X-Client-Id.
+ * Trả về { items, total, page, limit }. Nếu đã đăng nhập, mỗi item có thêm "liked".
  */
-router.get("/", async (req, res) => {
+router.get("/", requireAuthOptional as any, async (req: any, res) => {
   try {
     const page  = Math.max(1, parseInt(String(req.query.page || "1"), 10));
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "20"), 10)));
@@ -28,40 +24,36 @@ router.get("/", async (req, res) => {
     const col   = sort.replace(/^[-+]/, "");
     const allowed = new Set(["id", "created_at", "updated_at", "published_at", "title", "likes"]);
     const orderCol = allowed.has(col) ? col : "created_at";
-    const clientId = getClientId(req);
+
+    const userId = req.user?.id || null;
 
     const whereSQL: string[] = [];
     const params: any[] = [];
-    let i = 1;
-
     if (qtext) {
-      whereSQL.push(`(title ILIKE $${i} OR author ILIKE $${i})`);
+      whereSQL.push(`(title ILIKE $1 OR author ILIKE $1)`);
       params.push(`%${qtext}%`);
-      i++;
     }
     const whereClause = whereSQL.length ? `WHERE ${whereSQL.join(" AND ")}` : "";
 
     // Tổng số
-    const totalRows = await q<{ total: number }>(
-      `SELECT COUNT(*)::int AS total FROM articles ${whereClause}`,
-      params
-    );
-    const total = totalRows[0]?.total ?? 0;
+    const totalRow = (await q<{ total: number }>(
+      `SELECT COUNT(*)::int AS total FROM articles ${whereClause}`, params
+    ))[0];
+    const total = totalRow?.total ?? 0;
 
     // Items
     params.push(limit, (page - 1) * limit);
-    let likedSelect = `, false AS liked`;
-    if (clientId) {
-      likedSelect = `, EXISTS(SELECT 1 FROM article_likes al WHERE al.article_id = a.id AND al.client_id = $${i + 2}) AS liked`;
-    }
+    const likedSelect = userId
+      ? `, EXISTS(SELECT 1 FROM article_likes al WHERE al.article_id = a.id AND al.user_id = $${params.length + 1}) AS liked`
+      : `, false AS liked`;
+
     const items = await q<any>(
-      `SELECT a.*
-             ${likedSelect}
+      `SELECT a.* ${likedSelect}
          FROM articles a
          ${whereClause}
          ORDER BY ${orderCol} ${dir}, id DESC
-         LIMIT $${i} OFFSET $${i + 1}`,
-      clientId ? [...params, clientId] : params
+         LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      userId ? [...params, userId] : params
     );
 
     res.json({ items, total, page, limit });
@@ -75,22 +67,16 @@ router.get("/", async (req, res) => {
 router.get("/health", (_req, res) => res.json({ ok: true }));
 
 /**
- * 📥 Ingest
- * POST /api/articles/ingest?url=<medium_url>  (cũng nhận body.url)
- * Dùng cột `url` làm canonical key
+ * 📥 Ingest (không gắn user → KHÔNG auto-like tại đây)
  */
 router.post("/ingest", async (req, res) => {
   try {
     const urlRaw = String(req.query.url || req.body?.url || "");
     if (!urlRaw) return res.status(400).json({ error: "Missing url" });
 
-    // 1) Chuẩn hoá Medium URL
     const mediumUrl = normaliseMediumUrl(urlRaw);
-
-    // 2) Check cache theo cột `url`
     const exist = await q<any>(`SELECT * FROM articles WHERE url = $1`, [mediumUrl]);
 
-    // 3) Fetch nội dung (freedium để lấy full HTML nếu có)
     const freediumUrl = buildFreediumUrl(mediumUrl);
     const {
       title,
@@ -101,37 +87,24 @@ router.post("/ingest", async (req, res) => {
       sourceUsed,
     } = await fetchExtracted(freediumUrl, urlRaw);
 
-    // 4) Hash nội dung
     const contentHash = sha256((contentHtml || "") + (title || "") + (author || ""));
 
     if (exist[0] && exist[0].content_hash === contentHash && exist[0].summary_html) {
       return res.json({ status: "cached", article: exist[0] });
     }
 
-    // 5) Tóm tắt + keywords (keywords để dạng TEXT[] khi ghi DB)
     const summaryHtml = await summarizeContent({ title, excerpt, html: contentHtml, url: mediumUrl });
     const plain = (contentHtml || "").replace(/<[^>]+>/g, " ");
     let kws = await extractKeywords(plain);
     if (!Array.isArray(kws)) kws = [];
     const safeKeywords: string[] = kws.map(String).filter(Boolean).slice(0, 50);
 
-    // 6) Embedding -> vector
     const embedding = await createEmbedding(plain);
     const embeddingStr = embedding?.length ? `[${embedding.join(",")}]` : null;
 
-    // 7) Upsert theo cột `url`
     const params = [
-      mediumUrl,               // $1 url (canonical)
-      title,                   // $2
-      author,                  // $3
-      publishedAt,             // $4
-      excerpt,                 // $5
-      contentHtml,             // $6
-      contentHash,             // $7
-      summaryHtml,             // $8
-      safeKeywords,            // $9 (TEXT[])
-      embeddingStr,            // $10 (string '[..]' | null) -> ::vector
-      sourceUsed || "medium",  // $11
+      mediumUrl, title, author, publishedAt, excerpt, contentHtml, contentHash,
+      summaryHtml, safeKeywords, embeddingStr, sourceUsed || "medium"
     ];
 
     let rows;
@@ -154,10 +127,7 @@ router.post("/ingest", async (req, res) => {
            (url, title, author, published_at, excerpt, content_html,
             content_hash, summary_html, keywords, embedding, source_used)
          VALUES
-           ($1,  $2,    $3,     $4,           $5,     $6,
-            $7,   $8,   COALESCE($9::text[], '{}'::text[]),
-            COALESCE(NULLIF($10::text, '')::vector, NULL),
-            $11)
+           ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9::text[],'{}'::text[]),COALESCE(NULLIF($10::text,'')::vector,NULL),$11)
          RETURNING *`,
         params
       );
@@ -170,18 +140,18 @@ router.post("/ingest", async (req, res) => {
   }
 });
 
-/** ✅ GET 1 bài để trang đọc */
-router.get("/:id", async (req, res) => {
+/** ✅ GET 1 bài (kèm liked theo user_id nếu đã đăng nhập) */
+router.get("/:id", requireAuthOptional as any, async (req: any, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid id" });
   try {
-    const clientId = getClientId(req);
+    const userId = req.user?.id || null;
     const rows = await q<any>(
       `SELECT a.*,
-              ${clientId ? `EXISTS(SELECT 1 FROM article_likes al WHERE al.article_id=a.id AND al.client_id=$2)` : "false"} AS liked
+              ${userId ? `EXISTS(SELECT 1 FROM article_likes al WHERE al.article_id=a.id AND al.user_id=$2)` : "false"} AS liked
        FROM articles a
        WHERE a.id = $1`,
-      clientId ? [id, clientId] : [id]
+      userId ? [id, userId] : [id]
     );
     if (!rows[0]) return res.status(404).json({ error: "not found" });
     res.json(rows[0]);
@@ -191,83 +161,98 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-/** ❤️ LIKE (+1 nếu trước đó chưa like) */
-router.post("/:id/like", async (req, res) => {
+/** 👥 GET /:id/likes — chỉ người dùng thật (user_id). Trả count + 8 likers mới nhất + liked_by_me */
+router.get("/:id/likes", requireAuthOptional as any, async (req: any, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid id" });
-
-  const clientId = getClientId(req);
-  if (!clientId) return res.status(400).json({ error: "missing_client_id" });
-
   try {
-    const rows = await q<{ liked: boolean; likes: number }>(`
-      WITH ins AS (
-        INSERT INTO article_likes (article_id, client_id)
-        VALUES ($1, $2)
-        ON CONFLICT (article_id, client_id) DO NOTHING
-        RETURNING 1
-      ),
-      liked AS (
-        SELECT EXISTS(
-          SELECT 1 FROM article_likes WHERE article_id = $1 AND client_id = $2
-        ) AS liked
-      ),
-      agg AS (
-        SELECT COUNT(*)::int AS likes
-        FROM article_likes
-        WHERE article_id = $1
-      )
-      UPDATE articles a
-      SET likes = agg.likes
-      FROM agg
-      WHERE a.id = $1
-      RETURNING (SELECT liked FROM liked) AS liked, agg.likes;
-    `, [id, clientId]);
+    const { count } = (await q<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM article_likes WHERE article_id=$1`, [id]
+    ))[0] || { count: 0 };
 
-    const liked = rows[0]?.liked ?? true;
-    const likes = rows[0]?.likes ?? 0;
-    return res.json({ ok: true, id, liked, likes });
+    const likers = await q<{id:number;display_name:string;avatar_url:string|null}>(
+      `SELECT u.id, u.display_name, u.avatar_url
+         FROM article_likes al
+         JOIN users u ON u.id = al.user_id
+        WHERE al.article_id=$1
+        ORDER BY al.created_at DESC
+        LIMIT 8`,
+      [id]
+    );
+
+    let liked_by_me = false;
+    if (req.user?.id) {
+      const row = (await q<{ liked: boolean }>(
+        `SELECT EXISTS(SELECT 1 FROM article_likes WHERE article_id=$1 AND user_id=$2) AS liked`,
+        [id, req.user.id]
+      ))[0];
+      liked_by_me = !!row?.liked;
+    }
+
+    res.json({ ok:true, count, likers, liked_by_me });
+  } catch (err:any) {
+    console.error("GET /api/articles/:id/likes error:", err);
+    res.status(500).json({ ok:false, error:"server_error", detail: err.message });
+  }
+});
+
+/** ❤️ POST /:id/like — bắt buộc đăng nhập */
+router.post("/:id/like", requireAuth as any, async (req: any, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid id" });
+  try {
+    await q(
+      `INSERT INTO article_likes(article_id, user_id)
+       VALUES ($1, $2)
+       ON CONFLICT (article_id, user_id) DO NOTHING`,
+      [id, req.user.id]
+    );
+
+    const { count } = (await q<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM article_likes WHERE article_id=$1`, [id]
+    ))[0] || { count: 0 };
+
+    await q(`UPDATE articles SET likes=$1 WHERE id=$2`, [count, id]);
+
+    const likers = await q<{id:number;display_name:string;avatar_url:string|null}>(
+      `SELECT u.id, u.display_name, u.avatar_url
+         FROM article_likes al JOIN users u ON u.id=al.user_id
+        WHERE al.article_id=$1
+        ORDER BY al.created_at DESC
+        LIMIT 8`,
+      [id]
+    );
+
+    res.json({ ok:true, id, liked:true, likes: count, likers });
   } catch (err: any) {
     console.error("POST /api/articles/:id/like error:", err);
     return res.status(500).json({ error: "like_failed", detail: err.message });
   }
 });
 
-/** 💔 UNLIKE (-1 nếu đang like) */
-router.delete("/:id/like", async (req, res) => {
+/** 💔 DELETE /:id/like — bắt buộc đăng nhập */
+router.delete("/:id/like", requireAuth as any, async (req: any, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid id" });
-
-  const clientId = getClientId(req);
-  if (!clientId) return res.status(400).json({ error: "missing_client_id" });
-
   try {
-    const rows = await q<{ liked: boolean; likes: number }>(`
-      WITH del AS (
-        DELETE FROM article_likes
-        WHERE article_id = $1 AND client_id = $2
-        RETURNING 1
-      ),
-      liked AS (
-        SELECT EXISTS(
-          SELECT 1 FROM article_likes WHERE article_id = $1 AND client_id = $2
-        ) AS liked
-      ),
-      agg AS (
-        SELECT COUNT(*)::int AS likes
-        FROM article_likes
-        WHERE article_id = $1
-      )
-      UPDATE articles a
-      SET likes = agg.likes
-      FROM agg
-      WHERE a.id = $1
-      RETURNING (SELECT liked FROM liked) AS liked, agg.likes;
-    `, [id, clientId]);
+    await q(`DELETE FROM article_likes WHERE article_id=$1 AND user_id=$2`, [id, req.user.id]);
 
-    const liked = rows[0]?.liked ?? false;
-    const likes = rows[0]?.likes ?? 0;
-    return res.json({ ok: true, id, liked, likes });
+    const { count } = (await q<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM article_likes WHERE article_id=$1`, [id]
+    ))[0] || { count: 0 };
+
+    await q(`UPDATE articles SET likes=$1 WHERE id=$2`, [count, id]);
+
+    const likers = await q<{id:number;display_name:string;avatar_url:string|null}>(
+      `SELECT u.id, u.display_name, u.avatar_url
+         FROM article_likes al JOIN users u ON u.id=al.user_id
+        WHERE al.article_id=$1
+        ORDER BY al.created_at DESC
+        LIMIT 8`,
+      [id]
+    );
+
+    return res.json({ ok: true, id, liked: false, likes: count, likers });
   } catch (err: any) {
     console.error("DELETE /api/articles/:id/like error:", err);
     return res.status(500).json({ error: "unlike_failed", detail: err.message });

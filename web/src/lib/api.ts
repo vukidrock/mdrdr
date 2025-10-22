@@ -1,57 +1,13 @@
 // web/src/lib/api.ts
 
-// --- Safe UUID (polyfill) ---
-function safeUUID(): string {
-  const g: any = (typeof globalThis !== "undefined" ? globalThis : window) as any;
-  if (g.crypto && typeof g.crypto.randomUUID === "function") {
-    try { return g.crypto.randomUUID(); } catch {}
-  }
-  if (g.crypto && typeof g.crypto.getRandomValues === "function") {
-    const buf = new Uint8Array(16);
-    g.crypto.getRandomValues(buf);
-    buf[6] = (buf[6] & 0x0f) | 0x40;
-    buf[8] = (buf[8] & 0x3f) | 0x80;
-    const hex = Array.from(buf, (b) => b.toString(16).padStart(2, "0"));
-    return (
-      hex.slice(0, 4).join("") + "-" +
-      hex.slice(4, 6).join("") + "-" +
-      hex.slice(6, 8).join("") + "-" +
-      hex.slice(8, 10).join("") + "-" +
-      hex.slice(10, 16).join("")
-    );
-  }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
-// tạo/đọc client id ẩn danh
-function ensureClientId(): string {
-  try {
-    let id = localStorage.getItem("mdrdr.client");
-    if (!id) {
-      id = safeUUID();
-      localStorage.setItem("mdrdr.client", id);
-    }
-    return id;
-  } catch {
-    return safeUUID();
-  }
-}
-
 export const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE ??
-  `${location.protocol}//${location.hostname}:3001`;
+  (import.meta as any).env?.VITE_API_BASE ?? "";
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const cid = ensureClientId();
   const r = await fetch(`${API_BASE}${path}`, {
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      "X-Client-Id": cid,
       ...(init?.headers || {}),
     },
     ...init,
@@ -63,6 +19,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+/** Ingest 1 bài viết */
 export async function ingest(url: string) {
   return http<{ status: string; article?: any }>(
     `/api/articles/ingest?url=${encodeURIComponent(url)}`,
@@ -70,6 +27,7 @@ export async function ingest(url: string) {
   );
 }
 
+/** Danh sách bài viết (có cờ liked nếu đã đăng nhập) */
 export async function listArticles(opts?: {
   page?: number; limit?: number; sort?: string; q?: string;
 }) {
@@ -85,11 +43,22 @@ export async function listArticles(opts?: {
   );
 }
 
+/** Lấy chi tiết 1 bài (kèm liked nếu đã đăng nhập) */
 export async function getArticle(id: number) {
   return http<any>(`/api/articles/${id}`);
 }
 
-// ❤️ like / unlike rõ ràng
+/** Likes: đếm + danh sách avatar + liked_by_me (UI avatar stack) */
+export async function getLikes(articleId: number) {
+  return http<{
+    ok: true;
+    count: number;
+    likers: { id: number; display_name: string; avatar_url?: string }[];
+    liked_by_me: boolean;
+  }>(`/api/articles/${articleId}/likes`);
+}
+
+/** ❤️ like / 💔 unlike — yêu cầu đã đăng nhập (cookie JWT) */
 export async function like(id: number) {
   return http<{ ok: true; id: number; liked: boolean; likes: number }>(
     `/api/articles/${id}/like`,
@@ -100,5 +69,12 @@ export async function unlike(id: number) {
   return http<{ ok: true; id: number; liked: boolean; likes: number }>(
     `/api/articles/${id}/like`,
     { method: "DELETE" }
+  );
+}
+
+/** (tuỳ dùng) Lấy user hiện tại từ cookie JWT */
+export async function getMe() {
+  return http<{ ok: true; user: null | { id: number; display_name: string; avatar_url?: string } }>(
+    `/api/me`
   );
 }

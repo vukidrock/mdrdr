@@ -18,6 +18,13 @@ type Article = {
   liked?: boolean;
 };
 
+type LikesResp = {
+  ok: true;
+  count: number;
+  likers: { id: number; display_name: string; avatar_url?: string }[];
+  liked_by_me: boolean;
+};
+
 function timeFull(d?: string | null) {
   return d ? new Date(d).toLocaleString() : "";
 }
@@ -31,15 +38,25 @@ function getDomain(u?: string | null): string {
   }
 }
 
+// Small helper to call the new likes endpoint without touching lib/api
+async function fetchLikes(articleId: number): Promise<LikesResp> {
+  const API_BASE = (import.meta as any).env?.VITE_API_BASE || "";
+  const res = await fetch(`${API_BASE}/api/articles/${articleId}/likes`, { credentials: "include" });
+  if (!res.ok) throw new Error(String(res.status));
+  return res.json();
+}
+
 export default function ArticleView() {
   const { id } = useParams();
   const [data, setData] = useState<Article | null>(null);
+  const [likesBox, setLikesBox] = useState<LikesResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const domain = useMemo(() => getDomain(data?.url || data?.medium_url), [data]);
   const ico = domain ? `https://icons.duckduckgo.com/ip3/${domain}.ico` : "";
 
+  // load article
   useEffect(() => {
     if (!id) return;
     setLoading(true);
@@ -53,16 +70,34 @@ export default function ArticleView() {
       .finally(() => setLoading(false));
   }, [id]);
 
-const onToggleLike = async () => {
-  if (!data) return;
-  try {
-    const r = data.liked ? await unlike(data.id) : await like(data.id);
-    setData(prev => prev ? { ...prev, liked: r.liked, likes: r.likes } : prev);
-  } catch (e) {
-    console.error(e);
-    alert("Toggle like failed");
-  }
-};
+  // load likes panel (count + avatars + liked_by_me)
+  useEffect(() => {
+    if (!id) return;
+    fetchLikes(Number(id))
+      .then((r) => setLikesBox(r))
+      .catch(() => setLikesBox(null));
+  }, [id]);
+
+  const onToggleLike = async () => {
+    if (!data) return;
+    try {
+      const r = data.liked ? await unlike(data.id) : await like(data.id);
+      // cập nhật số & cờ liked trong bài:
+      setData((prev) => (prev ? { ...prev, liked: r.liked, likes: r.likes } : prev));
+      // reload avatar stack để phản ánh người mới like/unlike
+      const fresh = await fetchLikes(data.id);
+      setLikesBox(fresh);
+    } catch (e: any) {
+      // nếu chưa đăng nhập, backend sẽ trả 401
+      const msg = String(e?.message || "");
+      if (msg.includes("401")) {
+        alert("Hãy đăng nhập để like.");
+      } else {
+        console.error(e);
+        alert("Toggle like failed");
+      }
+    }
+  };
 
   if (loading) {
     return (
@@ -87,21 +122,21 @@ const onToggleLike = async () => {
   }
   if (!data) return null;
 
-  const liked = !!data.liked;
+  const liked = !!(likesBox ? likesBox.liked_by_me : data.liked);
 
   return (
     <div className="max-w-3xl mx-auto p-4">
       {/* Back + actions */}
       <div className="mb-3 flex items-center justify-between">
         <Link to="/articles" className="text-sm underline">← Back to list</Link>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <button
             onClick={onToggleLike}
             className={[
               "inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-sm transition",
               liked
-                ? "bg-red-100 text-red-700 border border-red-300 dark:bg-red-900/30 dark:text-red-200 dark:border-red-800"
-                : "border border-red-500 text-red-600 hover:bg-red-50 dark:border-red-400 dark:text-red-300 dark:hover:bg-red-900/20",
+                ? "bg-black text-white border border-black/80 dark:bg-white dark:text-black"
+                : "border border-zinc-400 text-zinc-800 hover:bg-zinc-50 dark:border-zinc-500 dark:text-zinc-200 dark:hover:bg-zinc-800/30",
             ].join(" ")}
             title={liked ? "Unlike" : "Like"}
           >
@@ -117,8 +152,22 @@ const onToggleLike = async () => {
             >
               <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 1 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78z"/>
             </svg>
-            <span className="tabular-nums">{data.likes ?? 0}</span>
+            <span className="tabular-nums">{likesBox?.count ?? data.likes ?? 0}</span>
           </button>
+
+          {/* Avatar stack of likers (max 8) */}
+          <div className="hidden sm:flex -space-x-2">
+            {likesBox?.likers?.map((u) => (
+              <img
+                key={u.id}
+                src={u.avatar_url || ""}
+                title={u.display_name}
+                className="w-6 h-6 rounded-full ring-2 ring-white object-cover"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }}
+              />
+            ))}
+          </div>
+
           {data.url || data.medium_url ? (
             <a
               href={data.url || data.medium_url || "#"}

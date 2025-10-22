@@ -1,9 +1,5 @@
 // src/apiClient.ts
-const API_BASE =
-  import.meta.env.VITE_API_BASE?.replace(/\/$/, "") ||
-  (typeof window !== "undefined"
-    ? `${window.location.origin.replace(/:3000/, ":3001")}`
-    : "http://localhost:3001");
+const API_BASE = import.meta.env.VITE_API_BASE?.toString() || "";
 
 export interface FetchOptions extends RequestInit {
   json?: boolean;

@@ -7,6 +7,7 @@ import TopBar from "./components/TopBar";
 import Privacy from "./pages/Privacy";
 import Deletion from "./pages/Deletion";
 import Profile from "./pages/Profile";
+import ToastProvider from "./components/ToastProvider";
 
 function Shell() {
   // anti-flash đã lo ở index.html; đây chỉ sync toggle khi người dùng bấm
@@ -23,6 +24,8 @@ function Shell() {
 
   return (
     <div className="min-h-screen bg-white text-zinc-900 dark:bg-black dark:text-zinc-100">
+      <ToastProvider />
+
       {/* Header */}
       <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/50 dark:border-zinc-800 dark:bg-black/60 dark:supports-[backdrop-filter]:bg-black/40">
         <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
@@ -68,17 +71,19 @@ function Shell() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Shell />}>
-          <Route index element={<Read />} />
-          <Route path="/articles" element={<ArticlesList />} />
-          <Route path="/articles/:id" element={<ArticleView />} />
-	  <Route path="/profile" element={<Profile />} />
-	  <Route path="/privacy" element={<Privacy />} />
-	  <Route path="/privacy/deletion" element={<Deletion />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <ToastProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Shell />}>
+            <Route index element={<Read />} />
+            <Route path="/articles" element={<ArticlesList />} />
+            <Route path="/articles/:id" element={<ArticleView />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/privacy/deletion" element={<Deletion />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </ToastProvider>
   );
 }

@@ -1,68 +1,50 @@
 // web/src/lib/api.ts
 
-// --- Safe UUID (polyfill) ---
-function safeUUID(): string {
-  const g: any = (typeof globalThis !== "undefined" ? globalThis : window) as any;
-  if (g.crypto && typeof g.crypto.randomUUID === "function") {
-    try { return g.crypto.randomUUID(); } catch {}
-  }
-  if (g.crypto && typeof g.crypto.getRandomValues === "function") {
-    const buf = new Uint8Array(16);
-    g.crypto.getRandomValues(buf);
-    buf[6] = (buf[6] & 0x0f) | 0x40;
-    buf[8] = (buf[8] & 0x3f) | 0x80;
-    const hex = Array.from(buf, (b) => b.toString(16).padStart(2, "0"));
-    return (
-      hex.slice(0, 4).join("") + "-" +
-      hex.slice(4, 6).join("") + "-" +
-      hex.slice(6, 8).join("") + "-" +
-      hex.slice(8, 10).join("") + "-" +
-      hex.slice(10, 16).join("")
-    );
-  }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
-// tạo/đọc client id ẩn danh
-function ensureClientId(): string {
-  try {
-    let id = localStorage.getItem("mdrdr.client");
-    if (!id) {
-      id = safeUUID();
-      localStorage.setItem("mdrdr.client", id);
-    }
-    return id;
-  } catch {
-    return safeUUID();
-  }
-}
-
+// Tự suy luận API_BASE: mặc định cùng origin (https://mdrdr.xyz),
+// còn khi dev (http://localhost:3000) sẽ tự đổi sang :3001
 export const API_BASE =
   (import.meta as any).env?.VITE_API_BASE ??
-  `${location.protocol}//${location.hostname}:3001`;
+  `${location.protocol}//${location.hostname}${location.port ? `:${location.port}` : ""}`.replace(
+    /:3000$/,
+    ":3001"
+  );
+
+// Lỗi có status để UI bắt 401 hiển thị toast lịch sự
+export class ApiError extends Error {
+  status: number;
+  body?: any;
+  constructor(status: number, message: string, body?: any) {
+    super(message);
+    this.status = status;
+    this.body = body;
+  }
+}
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const cid = ensureClientId();
   const r = await fetch(`${API_BASE}${path}`, {
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      "X-Client-Id": cid,
       ...(init?.headers || {}),
     },
     ...init,
   });
-  if (!r.ok) {
-    const text = await r.text().catch(() => "");
-    throw new Error(`${r.status} ${r.statusText}${text ? `: ${text}` : ""}`);
+
+  if (r.ok) return r.json() as Promise<T>;
+
+  // gom message từ json/text để debug tốt hơn
+  let body: any = undefined;
+  try {
+    const ct = r.headers.get("content-type") || "";
+    body = ct.includes("application/json") ? await r.json() : await r.text();
+  } catch {
+    /* ignore */
   }
-  return r.json() as Promise<T>;
+  const msg = typeof body === "string" ? body : JSON.stringify(body ?? {});
+  throw new ApiError(r.status, `${r.status} ${r.statusText}${msg ? `: ${msg}` : ""}`, body);
 }
 
+/** Ingest 1 bài viết */
 export async function ingest(url: string) {
   return http<{ status: string; article?: any }>(
     `/api/articles/ingest?url=${encodeURIComponent(url)}`,
@@ -70,6 +52,7 @@ export async function ingest(url: string) {
   );
 }
 
+/** Danh sách bài viết (có cờ liked nếu đã đăng nhập) */
 export async function listArticles(opts?: {
   page?: number; limit?: number; sort?: string; q?: string;
 }) {
@@ -85,11 +68,51 @@ export async function listArticles(opts?: {
   );
 }
 
+/** Lấy chi tiết 1 bài (kèm liked nếu đã đăng nhập) */
 export async function getArticle(id: number) {
-  return http<any>(`/api/articles/${id}`);
+  const res = await fetch(`${API_BASE}/api/articles/${id}`, { credentials: "include" });
+  if (!res.ok) throw new Error(String(res.status));
+  const j = await res.json();
+  // map nhưng giữ toàn bộ trường quan trọng:
+  return {
+    id: j.id,
+    url: j.url,
+    medium_url: j.medium_url,
+    title: j.title,
+    author: j.author,
+    published_at: j.published_at,
+    summary_html: j.summary_html,
+    content_html: j.content_html,
+    created_at: j.created_at,
+    updated_at: j.updated_at,
+    likes: j.likes,
+    liked: j.liked,
+
+    // giữ MEDIA FIELDS
+    content_type: j.content_type,
+    provider: j.provider,
+    provider_id: j.provider_id,
+    original_url: j.original_url,
+    embed_html: j.embed_html,
+    thumbnail_url: j.thumbnail_url,
+    duration_seconds: j.duration_seconds,
+    media_width: j.media_width,
+    media_height: j.media_height,
+    extra: j.extra,
+  };
 }
 
-// ❤️ like / unlike rõ ràng
+/** Likes: đếm + danh sách avatar + liked_by_me (UI avatar stack) */
+export async function getLikes(articleId: number) {
+  return http<{
+    ok: true;
+    count: number;
+    likers: { id: number; display_name: string; avatar_url?: string | null }[];
+    liked_by_me: boolean;
+  }>(`/api/articles/${articleId}/likes`);
+}
+
+/** ❤️ like / 💔 unlike — yêu cầu đã đăng nhập (cookie JWT) */
 export async function like(id: number) {
   return http<{ ok: true; id: number; liked: boolean; likes: number }>(
     `/api/articles/${id}/like`,
@@ -100,5 +123,12 @@ export async function unlike(id: number) {
   return http<{ ok: true; id: number; liked: boolean; likes: number }>(
     `/api/articles/${id}/like`,
     { method: "DELETE" }
+  );
+}
+
+/** Lấy user hiện tại từ cookie JWT */
+export async function getMe() {
+  return http<{ ok: true; user: null | { id: number; display_name: string; avatar_url?: string | null } }>(
+    `/api/me`
   );
 }

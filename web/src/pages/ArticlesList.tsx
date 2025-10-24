@@ -1,6 +1,7 @@
 // web/src/pages/ArticlesList.tsx
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { toast } from "react-hot-toast";
 import { listArticles, like, unlike } from "../lib/api";
 
 type Article = {
@@ -13,7 +14,7 @@ type Article = {
   published_at: string | null;
   created_at: string;
   likes: number;
-  liked?: boolean; // server trả nếu gửi X-Client-Id
+  liked?: boolean; // server trả nếu có cookie đăng nhập
 };
 
 type ListResp = {
@@ -62,6 +63,7 @@ export default function ArticlesList() {
   const [data, setData] = useState<ListResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [pendingId, setPendingId] = useState<number | null>(null); // chống double click
 
   const fetchOpts = useMemo(
     () => ({ page, limit: PAGE_SIZE, sort, q }),
@@ -98,23 +100,33 @@ export default function ArticlesList() {
     setParams(np);
   };
 
-const onToggleLike = async (id: number, curLiked: boolean) => {
-  try {
-    const r = curLiked ? await unlike(id) : await like(id);
-    // Cập nhật đúng theo server trả về
-    setData(prev =>
-      prev ? {
-        ...prev,
-        items: prev.items.map(it =>
-          it.id === id ? { ...it, liked: r.liked, likes: r.likes } : it
-        )
-      } : prev
-    );
-  } catch (e) {
-    console.error(e);
-    alert("Toggle like failed");
-  }
-};
+  const onToggleLike = async (id: number, curLiked: boolean) => {
+    try {
+      setPendingId(id);
+      const r = curLiked ? await unlike(id) : await like(id);
+      setData(prev =>
+        prev ? {
+          ...prev,
+          items: prev.items.map(it =>
+            it.id === id ? { ...it, liked: r.liked, likes: r.likes } : it
+          )
+        } : prev
+      );
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (msg.includes("401")) {
+        toast("Vui lòng đăng nhập để thả tim bài viết này ❤️", {
+          icon: "🔒",
+          duration: 2500,
+        });
+      } else {
+        console.error(e);
+        toast.error("Không thể xử lý like. Thử lại sau!");
+      }
+    } finally {
+      setPendingId(null);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -174,6 +186,8 @@ const onToggleLike = async (id: number, curLiked: boolean) => {
               const domain = getDomain(a.url || a.medium_url) || "—";
               const ico = domain !== "—" ? `https://icons.duckduckgo.com/ip3/${domain}.ico` : "";
               const liked = !!a.liked;
+              const disabled = pendingId === a.id;
+
               return (
                 <li
                   key={a.id}
@@ -217,18 +231,19 @@ const onToggleLike = async (id: number, curLiked: boolean) => {
                       </div>
                     </div>
 
-                    {/* Like button (heart outline → filled) */}
+                    {/* Like button */}
                     <button
                       onClick={() => onToggleLike(a.id, liked)}
+                      disabled={disabled}
                       className={[
                         "shrink-0 inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-sm transition",
+                        disabled ? "opacity-60 cursor-not-allowed" : "",
                         liked
-                          ? "bg-red-100 text-red-700 border border-red-300 dark:bg-red-900/30 dark:text-red-200 dark:border-red-800"
-                          : "border border-red-500 text-red-600 hover:bg-red-50 dark:border-red-400 dark:text-red-300 dark:hover:bg-red-900/20",
+                          ? "bg-black text-white border border-black/80 dark:bg-white dark:text-black"
+                          : "border border-zinc-400 text-zinc-800 hover:bg-zinc-50 dark:border-zinc-500 dark:text-zinc-200 dark:hover:bg-zinc-800/30",
                       ].join(" ")}
                       title={liked ? "Unlike" : "Like"}
                     >
-                      {/* SVG tim: filled khi liked, outline khi chưa */}
                       <svg
                         className="w-4 h-4"
                         viewBox="0 0 24 24"

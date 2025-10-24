@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import passport from "passport";
 import path from "path";
 import { fileURLToPath } from "url";
+import media from "./routes/api/media.js";
 
 // Routers (ESM + TS: dùng đuôi .js vì chạy ESM sau build)
 import api from "./routes/index.js";                 // routes/index.ts -> export default api
@@ -56,6 +57,8 @@ app.options("*", cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
 app.use(passport.initialize());
+
+app.use("/api/media", media);
 
 // ========= Ping nhanh =========
 app.get("/api/ping", (_req, res) => {

@@ -1,6 +1,7 @@
 // web/src/pages/ArticlesList.tsx
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { toast } from "react-hot-toast";
 import { listArticles, like, unlike } from "../lib/api";
 
 type Article = {
@@ -62,7 +63,7 @@ export default function ArticlesList() {
   const [data, setData] = useState<ListResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [pendingId, setPendingId] = useState<number | null>(null); // ⬅ chống double click
+  const [pendingId, setPendingId] = useState<number | null>(null); // chống double click
 
   const fetchOpts = useMemo(
     () => ({ page, limit: PAGE_SIZE, sort, q }),
@@ -103,7 +104,6 @@ export default function ArticlesList() {
     try {
       setPendingId(id);
       const r = curLiked ? await unlike(id) : await like(id);
-      // Cập nhật đúng theo server trả về
       setData(prev =>
         prev ? {
           ...prev,
@@ -115,10 +115,13 @@ export default function ArticlesList() {
     } catch (e: any) {
       const msg = String(e?.message || "");
       if (msg.includes("401")) {
-        alert("Hãy đăng nhập để like.");
+        toast("Vui lòng đăng nhập để thả tim bài viết này ❤️", {
+          icon: "🔒",
+          duration: 2500,
+        });
       } else {
         console.error(e);
-        alert("Toggle like failed");
+        toast.error("Không thể xử lý like. Thử lại sau!");
       }
     } finally {
       setPendingId(null);

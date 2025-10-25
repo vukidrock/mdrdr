@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { toast } from "react-hot-toast";
 import { getArticle, like, unlike } from "../lib/api";
 import EmbedHTML from "../components/EmbedHTML";
+import Comments from "../components/comments/Comments";
 
 type Article = {
   id: number;
@@ -51,7 +52,6 @@ export default function ArticleView() {
     setErr(null);
     getArticle(Number(id))
       .then((a) => {
-        console.log("Article payload:", a);
         setData(a);
         if (a?.title) document.title = a.title + " – mdrdr";
       })
@@ -117,7 +117,7 @@ export default function ArticleView() {
           >
             ❤️ <span className="tabular-nums">{likesBox?.count ?? data.likes ?? 0}</span>
           </button>
-          {data.url || data.medium_url ? (
+          {(data.url || data.medium_url) && (
             <a
               href={data.url || data.medium_url || "#"}
               target="_blank"
@@ -127,7 +127,7 @@ export default function ArticleView() {
             >
               🔗 Open source
             </a>
-          ) : null}
+          )}
         </div>
       </div>
 
@@ -149,7 +149,7 @@ export default function ArticleView() {
         {data.published_at && <span>· {new Date(data.published_at).toLocaleDateString()}</span>}
       </div>
 
-      {/* SUMMARY (luôn hiển thị nếu có) */}
+      {/* SUMMARY */}
       {data.summary_html && (
         <section className="mb-8 rounded-2xl border border-zinc-200 bg-white/70 p-4">
           <h2 className="text-xl font-semibold mb-2">Summary</h2>
@@ -160,7 +160,7 @@ export default function ArticleView() {
         </section>
       )}
 
-      {/* BODY: ưu tiên MEDIA, sau đó tới article content, rồi fallback */}
+      {/* BODY */}
       {isMedia && data.embed_html ? (
         <section className="mb-8">
           <EmbedHTML html={data.embed_html} />
@@ -176,6 +176,14 @@ export default function ArticleView() {
           {data.url ? <> Bạn có thể <a className="underline" href={data.url} target="_blank" rel="noreferrer">mở nguồn gốc</a> để xem chi tiết.</> : null}
         </div>
       )}
+
+      {/* ✅ Separator mượt trước Comments */}
+      <div className="my-10 h-px bg-gradient-to-r from-transparent via-zinc-300 to-transparent" />
+
+      {/* ✅ COMMENTS */}
+      <section className="mt-6">
+        <Comments articleId={String(data.id)} />
+      </section>
     </div>
   );
 }

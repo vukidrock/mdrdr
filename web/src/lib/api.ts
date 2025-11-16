@@ -1,7 +1,24 @@
 // web/src/lib/api.ts
 
+// Tự suy luận API_BASE: mặc định cùng origin (https://mdrdr.xyz),
+// còn khi dev (http://localhost:3000) sẽ tự đổi sang :3001
 export const API_BASE =
-  (import.meta as any).env?.VITE_API_BASE ?? "";
+  (import.meta as any).env?.VITE_API_BASE ??
+  `${location.protocol}//${location.hostname}${location.port ? `:${location.port}` : ""}`.replace(
+    /:3000$/,
+    ":3001"
+  );
+
+// Lỗi có status để UI bắt 401 hiển thị toast lịch sự
+export class ApiError extends Error {
+  status: number;
+  body?: any;
+  constructor(status: number, message: string, body?: any) {
+    super(message);
+    this.status = status;
+    this.body = body;
+  }
+}
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, {
@@ -12,11 +29,19 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
     },
     ...init,
   });
-  if (!r.ok) {
-    const text = await r.text().catch(() => "");
-    throw new Error(`${r.status} ${r.statusText}${text ? `: ${text}` : ""}`);
+
+  if (r.ok) return r.json() as Promise<T>;
+
+  // gom message từ json/text để debug tốt hơn
+  let body: any = undefined;
+  try {
+    const ct = r.headers.get("content-type") || "";
+    body = ct.includes("application/json") ? await r.json() : await r.text();
+  } catch {
+    /* ignore */
   }
-  return r.json() as Promise<T>;
+  const msg = typeof body === "string" ? body : JSON.stringify(body ?? {});
+  throw new ApiError(r.status, `${r.status} ${r.statusText}${msg ? `: ${msg}` : ""}`, body);
 }
 
 /** Ingest 1 bài viết */
@@ -45,7 +70,36 @@ export async function listArticles(opts?: {
 
 /** Lấy chi tiết 1 bài (kèm liked nếu đã đăng nhập) */
 export async function getArticle(id: number) {
-  return http<any>(`/api/articles/${id}`);
+  const res = await fetch(`${API_BASE}/api/articles/${id}`, { credentials: "include" });
+  if (!res.ok) throw new Error(String(res.status));
+  const j = await res.json();
+  // map nhưng giữ toàn bộ trường quan trọng:
+  return {
+    id: j.id,
+    url: j.url,
+    medium_url: j.medium_url,
+    title: j.title,
+    author: j.author,
+    published_at: j.published_at,
+    summary_html: j.summary_html,
+    content_html: j.content_html,
+    created_at: j.created_at,
+    updated_at: j.updated_at,
+    likes: j.likes,
+    liked: j.liked,
+
+    // giữ MEDIA FIELDS
+    content_type: j.content_type,
+    provider: j.provider,
+    provider_id: j.provider_id,
+    original_url: j.original_url,
+    embed_html: j.embed_html,
+    thumbnail_url: j.thumbnail_url,
+    duration_seconds: j.duration_seconds,
+    media_width: j.media_width,
+    media_height: j.media_height,
+    extra: j.extra,
+  };
 }
 
 /** Likes: đếm + danh sách avatar + liked_by_me (UI avatar stack) */
@@ -53,7 +107,7 @@ export async function getLikes(articleId: number) {
   return http<{
     ok: true;
     count: number;
-    likers: { id: number; display_name: string; avatar_url?: string }[];
+    likers: { id: number; display_name: string; avatar_url?: string | null }[];
     liked_by_me: boolean;
   }>(`/api/articles/${articleId}/likes`);
 }
@@ -72,9 +126,9 @@ export async function unlike(id: number) {
   );
 }
 
-/** (tuỳ dùng) Lấy user hiện tại từ cookie JWT */
+/** Lấy user hiện tại từ cookie JWT */
 export async function getMe() {
-  return http<{ ok: true; user: null | { id: number; display_name: string; avatar_url?: string } }>(
+  return http<{ ok: true; user: null | { id: number; display_name: string; avatar_url?: string | null } }>(
     `/api/me`
   );
 }
